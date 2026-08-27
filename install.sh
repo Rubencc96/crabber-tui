@@ -4,7 +4,7 @@ set -e
 # --- CONFIG ---
 REPO="Rubencc96/crabber-tui"
 BIN_NAME="crabber-tui"
-DEST_DIR="~/.local/bin"
+DEST_DIR="$HOME/.local/bin"
 # ---------------------
 
 echo "🦀 Installing $BIN_NAME..."
