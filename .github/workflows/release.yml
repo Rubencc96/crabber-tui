@@ -1,0 +1,48 @@
+name: Release Crabber
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+jobs:
+  build-and-release:
+    name: Build and Release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: crabber-tui
+            asset_name: crabber-linux-amd64
+          - os: windows-latest
+            artifact_name: crabber-tui.exe
+            asset_name: crabber-windows-amd64.exe
+          - os: macos-latest
+            artifact_name: crabber-tui
+            asset_name: crabber-macos-amd64
+
+    steps:
+      - name: Download code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build game
+        run: cargo build --release
+
+      - name: Renaming binary (Linux / macOS)
+        if: matrix.os != 'windows-latest'
+        run: mv target/release/${{ matrix.artifact_name }} target/release/${{ matrix.asset_name }}
+
+      - name: Rene executable (Windows)
+        if: matrix.os == 'windows-latest'
+        run: mv target/release/${{ matrix.artifact_name }} target/release/${{ matrix.asset_name }}
+
+      - name: Upload to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/${{ matrix.asset_name }}
