@@ -26,15 +26,54 @@ enum TrafficDirection {
     Right,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CarType {
+    Red,
+    Blue,
+    Yellow,
+    Magenta,
+}
+
+impl CarType {
+    fn speed(&self) -> u32 {
+        match self {
+            CarType::Red => 2,
+            CarType::Blue => 3,
+            CarType::Yellow => 4,
+            CarType::Magenta => 5,
+        }
+    }
+
+    fn color(&self) -> Color {
+        match self {
+            CarType::Red => Color::Red,
+            CarType::Blue => Color::Blue,
+            CarType::Yellow => Color::Yellow,
+            CarType::Magenta => Color::Magenta,
+        }
+    }
+
+    fn random() -> Self {
+        let mut rng = rand::thread_rng();
+        match rng.gen_range(0..4) {
+            0 => CarType::Red,
+            1 => CarType::Blue,
+            2 => CarType::Yellow,
+            _ => CarType::Magenta,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Car {
     x: i16,
+    car_type: CarType,
 }
 
 #[derive(Debug, Clone)]
 struct RoadData {
     direction: TrafficDirection,
-    speed: u32,
+    car_type: CarType,
     cars: Vec<Car>,
     spawn_interval: u32,
     ticks_since_spawn: u32,
@@ -75,6 +114,19 @@ enum Direction {
 }
 
 impl App {
+    fn road_lane_range(&self, score: usize) -> std::ops::RangeInclusive<usize> {
+        if score <= 20 {
+            2..=5
+        } else if score <= 60 {
+            3..=8
+        } else if score <= 100 {
+            4..=10
+        } else {
+            let shift = (score - 100) / 50;
+            (4 + shift)..=(10 + shift)
+        }
+    }
+
     fn new(width: u16, height: u16) -> Self {
         let mut app = Self {
             state: AppState::MainMenu,
@@ -96,12 +148,12 @@ impl App {
         }
 
         let mut rng = rand::thread_rng();
-        app.next_block_remaining = rng.gen_range(3..=6);
+        app.next_block_remaining = rng.gen_range(app.road_lane_range(app.lanes.len()));
         app.next_block_type = LaneType::Road(RoadData {
             direction: TrafficDirection::Right,
-            speed: 2,
+            car_type: CarType::Red,
             cars: Vec::new(),
-            spawn_interval: 20,
+            spawn_interval: 50,
             ticks_since_spawn: 0,
         });
 
@@ -126,12 +178,12 @@ impl App {
         }
 
         let mut rng = rand::thread_rng();
-        self.next_block_remaining = rng.gen_range(3..=6);
+        self.next_block_remaining = rng.gen_range(self.road_lane_range(self.lanes.len()));
         self.next_block_type = LaneType::Road(RoadData {
             direction: TrafficDirection::Right,
-            speed: 2,
+            car_type: CarType::Red,
             cars: Vec::new(),
-            spawn_interval: 20,
+            spawn_interval: 50,
             ticks_since_spawn: 0,
         });
 
@@ -149,17 +201,17 @@ impl App {
                         self.next_block_type = LaneType::SafeZone;
                     }
                     LaneType::SafeZone => {
-                        self.next_block_remaining = rng.gen_range(3..=6);
+                        self.next_block_remaining = rng.gen_range(self.road_lane_range(self.lanes.len()));
                         let direction = if rng.gen_bool(0.5) {
                             TrafficDirection::Left
                         } else {
                             TrafficDirection::Right
                         };
-                        let speed = rng.gen_range(2..=5);
-                        let spawn_interval = rng.gen_range(15..=35);
+                        let car_type = CarType::random();
+                        let spawn_interval = rng.gen_range(45..=85);
                         self.next_block_type = LaneType::Road(RoadData {
                             direction,
-                            speed,
+                            car_type,
                             cars: Vec::new(),
                             spawn_interval,
                             ticks_since_spawn: 0,
@@ -172,14 +224,21 @@ impl App {
                 LaneType::SafeZone => LaneType::SafeZone,
                 LaneType::Road(ref template) => {
                     let mut cars = Vec::new();
-                    let num_cars = rng.gen_range(1..=3);
+                    let num_cars = rng.gen_range(1..=2);
+                    let lane_car_type = CarType::random();
                     for _ in 0..num_cars {
                         let car_x = rng.gen_range(0..viewport_width) as i16;
-                        cars.push(Car { x: car_x });
+                        let mut attempts = 0;
+                        let mut x = car_x;
+                        while attempts < 10 && cars.iter().any(|c: &Car| (c.x - x).abs() < 3) {
+                            x = rng.gen_range(0..viewport_width) as i16;
+                            attempts += 1;
+                        }
+                        cars.push(Car { x, car_type: lane_car_type });
                     }
                     LaneType::Road(RoadData {
                         direction: template.direction,
-                        speed: template.speed,
+                        car_type: lane_car_type,
                         cars,
                         spawn_interval: template.spawn_interval,
                         ticks_since_spawn: rng.gen_range(0..template.spawn_interval),
@@ -229,7 +288,9 @@ impl App {
         if let Some(lane) = self.lanes.get(player_lane) {
             if let LaneType::Road(ref road) = lane.lane_type {
                 for car in &road.cars {
-                    if (self.player.x as i16 - car.x).abs() < 2 {
+                    // Crab is 2 wide, car is 3 wide.
+                    let px = self.player.x as i16;
+                    if px <= car.x + 2 && px + 1 >= car.x {
                         self.state = AppState::GameOver;
                         break;
                     }
@@ -251,20 +312,59 @@ impl App {
                 // 1. Spawning
                 road.ticks_since_spawn += 1;
                 if road.ticks_since_spawn >= road.spawn_interval {
-                    let spawn_x = match road.direction {
-                        TrafficDirection::Right => -2,
-                        TrafficDirection::Left => w_i16,
+                    let can_spawn = match road.direction {
+                        TrafficDirection::Right => !road.cars.iter().any(|c| c.x < 1),
+                        TrafficDirection::Left => !road.cars.iter().any(|c| c.x > w_i16 - 4),
                     };
-                    road.cars.push(Car { x: spawn_x });
-                    road.ticks_since_spawn = 0;
+                    if can_spawn {
+                        let spawn_x = match road.direction {
+                            TrafficDirection::Right => -3,
+                            TrafficDirection::Left => w_i16,
+                        };
+                        road.cars.push(Car { x: spawn_x, car_type: road.car_type });
+                        road.ticks_since_spawn = 0;
+                    }
+                }
+
+                // Sort cars so the leading car is processed first to handle queuing correctly
+                match road.direction {
+                    TrafficDirection::Right => {
+                        road.cars.sort_by(|a, b| b.x.cmp(&a.x));
+                    }
+                    TrafficDirection::Left => {
+                        road.cars.sort_by(|a, b| a.x.cmp(&b.x));
+                    }
                 }
 
                 // 2. Movement
-                if self.tick_count % road.speed == 0 {
-                    for car in road.cars.iter_mut() {
-                        match road.direction {
-                            TrafficDirection::Right => car.x += 1,
-                            TrafficDirection::Left => car.x -= 1,
+                for i in 0..road.cars.len() {
+                    let car_speed = road.cars[i].car_type.speed();
+                    if self.tick_count % car_speed == 0 {
+                        let next_x = match road.direction {
+                            TrafficDirection::Right => road.cars[i].x + 1,
+                            TrafficDirection::Left => road.cars[i].x - 1,
+                        };
+
+                        // Check collision with the car directly in front (width 3)
+                        let mut can_move = true;
+                        if i > 0 {
+                            let ahead_x = road.cars[i - 1].x;
+                            match road.direction {
+                                TrafficDirection::Right => {
+                                    if next_x + 2 >= ahead_x {
+                                        can_move = false;
+                                    }
+                                }
+                                TrafficDirection::Left => {
+                                    if next_x <= ahead_x + 2 {
+                                        can_move = false;
+                                    }
+                                }
+                            }
+                        }
+
+                        if can_move {
+                            road.cars[i].x = next_x;
                         }
                     }
                 }
@@ -273,7 +373,7 @@ impl App {
                 road.cars.retain(|car| {
                     match road.direction {
                         TrafficDirection::Right => car.x <= w_i16,
-                        TrafficDirection::Left => car.x >= -2,
+                        TrafficDirection::Left => car.x >= -3,
                     }
                 });
             }
@@ -338,13 +438,14 @@ fn main() -> io::Result<()> {
                     if let LaneType::Road(ref road) = lane.lane_type {
                         for car in &road.cars {
                             if car.x >= 0 && car.x < width as i16 {
-                                let car_rect = Rect::new(car.x as u16, visual_y as u16, 2, 1);
-                                let car_color = match road.direction {
-                                    TrafficDirection::Right => Color::Red,
-                                    TrafficDirection::Left => Color::Blue,
+                                let car_rect = Rect::new(car.x as u16, visual_y as u16, 3, 1);
+                                let car_color = car.car_type.color();
+                                let car_symbol = match road.direction {
+                                    TrafficDirection::Right => "[o>",
+                                    TrafficDirection::Left => "<o]",
                                 };
                                 frame.render_widget(
-                                    Paragraph::new("🚗").style(Style::default().fg(car_color)),
+                                    Paragraph::new(car_symbol).style(Style::default().fg(car_color)),
                                     car_rect,
                                 );
                             }
@@ -375,7 +476,7 @@ fn main() -> io::Result<()> {
                         .borders(Borders::ALL)
                         .border_type(BorderType::Double)
                         .border_style(Style::default().fg(Color::Green));
-                    let text = "\n  Help 🦀 cross the busy roads!\n\n  Controls:\n  - WASD / Arrow Keys to Move\n\n  Press ENTER or SPACE to Start\n  Press Q to Quit";
+                    let text = "\n  Help 🦀 cross the busy roads!\n\n  Controls:\n  - WASD / Arrow Keys / HJKL to Move\n\n  Press ENTER or SPACE to Start\n  Press Q to Quit";
                     let paragraph = Paragraph::new(text)
                         .block(block)
                         .style(Style::default().fg(Color::White).bg(Color::Black));
@@ -419,16 +520,16 @@ fn main() -> io::Result<()> {
                         },
                         AppState::Playing => match key.code {
                             KeyCode::Char('q') | KeyCode::Esc => break,
-                            KeyCode::Up | KeyCode::Char('w') | KeyCode::Char('W') => {
+                            KeyCode::Up | KeyCode::Char('w') | KeyCode::Char('W') | KeyCode::Char('k') | KeyCode::Char('K') => {
                                 app.move_player(Direction::Up, current_size.width, current_size.height);
                             }
-                            KeyCode::Down | KeyCode::Char('s') | KeyCode::Char('S') => {
+                            KeyCode::Down | KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Char('j') | KeyCode::Char('J') => {
                                 app.move_player(Direction::Down, current_size.width, current_size.height);
                             }
-                            KeyCode::Left | KeyCode::Char('a') | KeyCode::Char('A') => {
+                            KeyCode::Left | KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char('h') | KeyCode::Char('H') => {
                                 app.move_player(Direction::Left, current_size.width, current_size.height);
                             }
-                            KeyCode::Right | KeyCode::Char('d') | KeyCode::Char('D') => {
+                            KeyCode::Right | KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Char('l') | KeyCode::Char('L') => {
                                 app.move_player(Direction::Right, current_size.width, current_size.height);
                             }
                             _ => {}
